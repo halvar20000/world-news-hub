@@ -1,0 +1,53 @@
+name: Hourly news rebuild
+
+# Rebuilds docs/index.html every hour and commits it back to the repo.
+# GitHub Pages (configured to serve from /docs on the default branch) then
+# publishes the refreshed page automatically.
+
+on:
+  schedule:
+    # minute 7 of every hour (UTC). GitHub may delay scheduled runs a few
+    # minutes during peak load — that is normal, not a failure.
+    - cron: "7 * * * *"
+  workflow_dispatch:        # lets you trigger a build manually from the Actions tab
+  push:
+    branches: [ main ]      # rebuild on every code change too
+    paths:
+      - "build.py"
+      - "feeds.py"
+      - ".github/workflows/update.yml"
+
+permissions:
+  contents: write           # needed to commit the regenerated page
+
+concurrency:
+  group: news-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build site
+        run: python build.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "news-bot"
+          git config user.email "actions@github.com"
+          git add docs/index.html
+          if git diff --staged --quiet; then
+            echo "No content changes this run."
+          else
+            git commit -m "Hourly news update: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
