@@ -15,6 +15,7 @@ on:
     paths:
       - "build.py"
       - "feeds.py"
+      - "worldcup.py"
       - ".github/workflows/update.yml"
 
 permissions:

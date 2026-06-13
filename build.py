@@ -25,6 +25,11 @@ import feedparser
 
 from feeds import CATEGORIES, ITEMS_PER_FEED, MAX_PER_CATEGORY
 
+try:
+    from worldcup import fetch_worldcup
+except Exception:  # pragma: no cover - WC add-on is optional
+    fetch_worldcup = lambda *a, **k: None
+
 socket.setdefaulttimeout(25)
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -129,6 +134,17 @@ UI = {
         "ago": "ago", "now": "just now",
         "u_m": "min", "u_h": "h", "u_d": "d",
         "datefmt": "%A, %d %B %Y \u00b7 %H:%M",
+        "wc-title": "FIFA World Cup 2026",
+        "wc-sub": "USA \u00b7 Canada \u00b7 Mexico \u00b7 11 Jun \u2013 19 Jul 2026",
+        "wc-progress": "matches played",
+        "wc-results": "Latest results", "wc-today": "Today & live",
+        "wc-upcoming": "Upcoming", "wc-live": "LIVE",
+        "wc-none-today": "No matches scheduled today.",
+        "wc-none-up": "No upcoming matches.",
+        "wc-none-res": "No results yet.",
+        "wc-full": "Full schedule \u2014 all matches",
+        "wc-news": "World Cup headlines",
+        "wc-times": "Kick-off times shown in your local time (Europe/Paris).",
     },
     "de": {
         "tagline": "St\u00fcndliche Weltnachrichten von vertrauensw\u00fcrdigen Agenturen & \u00f6ffentlich-rechtlichen Sendern",
@@ -139,6 +155,17 @@ UI = {
         "ago": "", "now": "gerade eben",
         "u_m": "Min.", "u_h": "Std.", "u_d": "T",
         "datefmt": "%A, %d. %B %Y \u00b7 %H:%M",
+        "wc-title": "Fu\u00dfball-WM 2026",
+        "wc-sub": "USA \u00b7 Kanada \u00b7 Mexiko \u00b7 11. Juni \u2013 19. Juli 2026",
+        "wc-progress": "Spiele gespielt",
+        "wc-results": "Neueste Ergebnisse", "wc-today": "Heute & live",
+        "wc-upcoming": "Demn\u00e4chst", "wc-live": "LIVE",
+        "wc-none-today": "Heute keine Spiele angesetzt.",
+        "wc-none-up": "Keine anstehenden Spiele.",
+        "wc-none-res": "Noch keine Ergebnisse.",
+        "wc-full": "Kompletter Spielplan \u2014 alle Spiele",
+        "wc-news": "WM-Schlagzeilen",
+        "wc-times": "Ansto\u00dfzeiten in deiner Ortszeit (Europe/Paris).",
     },
     "fr": {
         "tagline": "Actualit\u00e9s mondiales horaires d'agences et de m\u00e9dias publics fiables",
@@ -149,8 +176,109 @@ UI = {
         "ago": "", "now": "\u00e0 l'instant",
         "u_m": "min", "u_h": "h", "u_d": "j",
         "datefmt": "%A %d %B %Y \u00b7 %H:%M",
+        "wc-title": "Coupe du monde 2026",
+        "wc-sub": "\u00c9tats-Unis \u00b7 Canada \u00b7 Mexique \u00b7 11 juin \u2013 19 juil. 2026",
+        "wc-progress": "matches jou\u00e9s",
+        "wc-results": "Derniers r\u00e9sultats", "wc-today": "Aujourd'hui & en direct",
+        "wc-upcoming": "\u00c0 venir", "wc-live": "EN DIRECT",
+        "wc-none-today": "Aucun match aujourd'hui.",
+        "wc-none-up": "Aucun match \u00e0 venir.",
+        "wc-none-res": "Pas encore de r\u00e9sultats.",
+        "wc-full": "Calendrier complet \u2014 tous les matches",
+        "wc-news": "Actu Coupe du monde",
+        "wc-times": "Heures de coup d'envoi affich\u00e9es dans votre fuseau (Europe/Paris).",
     },
 }
+
+
+# ----------------------------------------------------------- World Cup block
+def _wc_row(m):
+    """One match row: localized kickoff time (filled by JS), teams + score."""
+    e = html.escape
+    status = m.get("status", "upcoming")
+    if status == "finished" and m.get("score"):
+        mid = f'<span class="wc-sc">{e(m["score"])}</span>'
+    elif status == "live":
+        mid = '<span class="wc-livechip" data-i18n="wc-live"></span>'
+    else:
+        mid = '<span class="wc-vs">–</span>'
+    meta = " · ".join(x for x in (m.get("group", ""), m.get("ground", "")) if x)
+    return (
+        f'<div class="wc-m s-{status}">'
+        f'<time class="wc-ts" data-ts="{m["ts"]}"></time>'
+        f'<div class="wc-pair"><span class="wc-tn">{e(m["team1"])}</span>'
+        f'{mid}<span class="wc-tn wc-tn-r">{e(m["team2"])}</span></div>'
+        f'<div class="wc-meta">{e(meta)}</div></div>'
+    )
+
+
+def worldcup_section_html(wc):
+    """Render the whole featured World Cup banner, or '' if there's no data."""
+    if not wc:
+        return ""
+    e = html.escape
+
+    def col(items, none_key):
+        if not items:
+            return f'<p class="wc-none" data-i18n="{none_key}"></p>'
+        return "".join(_wc_row(m) for m in items)
+
+    upcoming = [m for m in wc["upcoming"] if not m.get("today")]
+    live_dot = '<span class="wc-live-dot"></span>' if wc["live"] else ""
+    stage = f'<span class="wc-stage">{e(wc["stage"])}</span>' if wc.get("stage") else ""
+
+    # full schedule grouped by phase
+    phases = []
+    for grp in wc["all"]:
+        rows = "".join(_wc_row(m) for m in grp["matches"])
+        phases.append(
+            f'<div class="wc-phase"><h4>{e(grp["phase"])}</h4>{rows}</div>'
+        )
+    full = (
+        '<details class="wc-full"><summary><span data-i18n="wc-full"></span></summary>'
+        f'<div class="wc-full-body">{"".join(phases)}</div></details>'
+    )
+
+    # news cards reuse the standard .card markup so the language filter and
+    # the "x min ago" timer apply to them automatically.
+    news_cards = []
+    for it in wc["news"]:
+        news_cards.append(
+            f'<article class="card" data-lang="{it["lang"]}" data-ts="{it["ts"]}">'
+            f'<div class="meta"><span class="src">{e(it["source"])}</span>'
+            f'<span class="lang l-{it["lang"]}">{it["lang"].upper()}</span>'
+            f'<time class="ago" data-ts="{it["ts"]}"></time></div>'
+            f'<h3><a href="{e(it["link"])}" target="_blank" rel="noopener noreferrer">{e(it["title"])}</a></h3>'
+            f'</article>'
+        )
+    news = (
+        '<div class="wc-news"><h3 data-i18n="wc-news"></h3>'
+        f'<div class="grid">{"".join(news_cards)}</div></div>'
+    ) if news_cards else ""
+
+    return (
+        '<section id="worldcup" class="wc">'
+        '<div class="wc-head">'
+        '<div class="wc-title"><span class="wc-ball">⚽</span>'
+        '<span data-i18n="wc-title"></span></div>'
+        '<div class="wc-sub" data-i18n="wc-sub"></div>'
+        f'<div class="wc-prog">{live_dot}{stage}'
+        f'<span><b>{wc["played"]}</b>/{wc["total"]} '
+        '<span data-i18n="wc-progress"></span></span></div>'
+        '</div>'
+        '<div class="wc-cols">'
+        '<div class="wc-col"><h3 data-i18n="wc-results"></h3>'
+        f'{col(wc["results"], "wc-none-res")}</div>'
+        '<div class="wc-col"><h3 data-i18n="wc-today"></h3>'
+        f'{col(wc["today"], "wc-none-today")}</div>'
+        '<div class="wc-col"><h3 data-i18n="wc-upcoming"></h3>'
+        f'{col(upcoming, "wc-none-up")}</div>'
+        '</div>'
+        f'{full}'
+        '<p class="wc-times" data-i18n="wc-times"></p>'
+        f'{news}'
+        '</section>'
+    )
 
 
 def pick_lead(pool, lang=None):
@@ -178,7 +306,7 @@ def lead_card_html(L):
     )
 
 
-def render(data, built_at):
+def render(data, built_at, wc=None):
     e = html.escape
     iso = built_at.astimezone(timezone.utc).isoformat()
 
@@ -235,6 +363,7 @@ def render(data, built_at):
 
     return TEMPLATE.format(
         nav=nav,
+        worldcup=worldcup_section_html(wc),
         lead=lead_card_html(lead_all),
         sections="".join(sections),
         iso=iso,
@@ -339,6 +468,65 @@ main{{padding:26px 0 10px}}
 .card h3 a:hover{{text-decoration:underline;text-decoration-color:var(--c)}}
 .card .sm{{font-size:13px;color:#46423b;line-height:1.45}}
 .empty{{color:var(--muted);font-style:italic;padding:8px 2px}}
+/* ---- World Cup featured block ---- */
+.wc{{--c:#15803d;background:linear-gradient(180deg,#0f3d24,#123f27);color:#eafbf0;
+  border-radius:7px;padding:20px 22px 22px;margin:26px 0 30px;
+  box-shadow:0 16px 40px -22px rgba(0,0,0,.7)}}
+.wc a{{color:#eafbf0}}
+.wc-head{{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px;
+  border-bottom:1px solid rgba(255,255,255,.2);padding-bottom:12px;margin-bottom:16px}}
+.wc-title{{font-family:Georgia,"Times New Roman",serif;font-weight:700;
+  font-size:clamp(20px,3.4vw,30px);letter-spacing:-.4px;display:flex;align-items:center;gap:9px}}
+.wc-ball{{font-size:.9em}}
+.wc-sub{{font-size:13px;color:#bfe6cd}}
+.wc-prog{{margin-left:auto;font-size:12.5px;color:#bfe6cd;display:flex;
+  align-items:center;gap:9px;flex-wrap:wrap}}
+.wc-prog b{{color:#fff}}
+.wc-stage{{background:rgba(255,255,255,.12);border-radius:999px;padding:2px 10px;
+  font-weight:600;color:#fff}}
+.wc-live-dot{{display:inline-block;width:9px;height:9px;border-radius:50%;
+  background:#ff5b4a;animation:wcpulse 1.6s infinite}}
+@keyframes wcpulse{{0%{{box-shadow:0 0 0 0 rgba(255,91,74,.6)}}70%{{box-shadow:0 0 0 8px rgba(255,91,74,0)}}100%{{box-shadow:0 0 0 0 rgba(255,91,74,0)}}}}
+.wc-cols{{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(248px,1fr))}}
+.wc-col h3{{font-size:11.5px;text-transform:uppercase;letter-spacing:1.2px;
+  color:#9ddcb3;margin-bottom:10px;font-weight:700}}
+.wc-m{{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);
+  border-left:3px solid var(--c);border-radius:5px;padding:8px 11px;margin-bottom:8px}}
+.wc-m.s-live{{border-left-color:#ff5b4a;background:rgba(255,91,74,.13)}}
+.wc-ts{{font-size:10.5px;color:#9ddcb3;text-transform:uppercase;letter-spacing:.5px;
+  font-variant-numeric:tabular-nums;display:block;margin-bottom:4px}}
+.wc-pair{{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px}}
+.wc-tn{{font-weight:600;font-size:14px;line-height:1.2}}
+.wc-tn-r{{text-align:right}}
+.wc-sc{{font-family:Georgia,serif;font-weight:700;font-size:16px;color:#fff;
+  background:rgba(0,0,0,.28);border-radius:4px;padding:1px 9px;
+  font-variant-numeric:tabular-nums;white-space:nowrap}}
+.wc-vs{{color:#7fbf99;font-size:13px}}
+.wc-livechip{{background:#ff5b4a;color:#fff;font-size:9.5px;font-weight:700;
+  letter-spacing:.8px;padding:3px 7px;border-radius:3px;white-space:nowrap}}
+.wc-meta{{font-size:10.5px;color:#8fcfa6;margin-top:4px}}
+.wc-none{{font-size:13px;color:#9ddcb3;font-style:italic;padding:6px 2px}}
+.wc-full{{margin-top:16px;border-top:1px solid rgba(255,255,255,.18);padding-top:12px}}
+.wc-full summary{{cursor:pointer;font-size:13px;font-weight:600;color:#cdeed8;list-style:none}}
+.wc-full summary::-webkit-details-marker{{display:none}}
+.wc-full summary::before{{content:"▸ ";color:#9ddcb3}}
+.wc-full[open] summary::before{{content:"▾ "}}
+.wc-full-body{{display:grid;gap:14px;margin-top:12px;
+  grid-template-columns:repeat(auto-fill,minmax(238px,1fr))}}
+.wc-phase h4{{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#9ddcb3;
+  margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,.12);padding-bottom:3px}}
+.wc-times{{font-size:11px;color:#7fbf99;margin-top:12px;font-style:italic}}
+.wc-news{{margin-top:16px;border-top:1px solid rgba(255,255,255,.18);padding-top:14px}}
+.wc-news>h3{{font-size:11.5px;text-transform:uppercase;letter-spacing:1.2px;
+  color:#9ddcb3;margin-bottom:10px;font-weight:700}}
+.wc-news .grid{{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}}
+.wc-news .card{{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.12);
+  border-left-color:var(--c)}}
+.wc-news .card:hover{{box-shadow:0 8px 22px -12px rgba(0,0,0,.6)}}
+.wc-news .card .src{{color:#9ddcb3}}
+.wc-news .card .meta{{color:#8fcfa6}}
+.wc-news .card h3 a{{color:#fff}}
+.wc-news .card .lang{{border-color:rgba(255,255,255,.25)}}
 /* ---- footer ---- */
 footer{{border-top:3px double var(--ink);margin-top:24px;padding:20px 0 40px;
   font-size:12.5px;color:var(--muted);text-align:center}}
@@ -372,7 +560,7 @@ footer .auto{{margin-top:6px}}
   </div>
 </header>
 
-<main class="wrap">{lead}{sections}</main>
+<main class="wrap">{worldcup}{lead}{sections}</main>
 
 <footer class="wrap">
   <div class="trust" data-i18n="trust"></div>
@@ -419,6 +607,19 @@ function applyI18n(){{
   }});
   document.getElementById("built").textContent = fmtBuilt();
   updateAgos();
+  updateMatchTimes();
+}}
+
+function fmtMatch(ts){{
+  const d = new Date(ts*1000);
+  const loc = {{en:"en-GB", de:"de-DE", fr:"fr-FR"}}[uiLang];
+  return d.toLocaleString(loc, {{weekday:"short",day:"2-digit",month:"short",
+    hour:"2-digit",minute:"2-digit",timeZone:"Europe/Paris"}});
+}}
+function updateMatchTimes(){{
+  document.querySelectorAll("time.wc-ts").forEach(el=>{{
+    el.textContent = fmtMatch(parseInt(el.dataset.ts,10));
+  }});
 }}
 
 function fmtBuilt(){{
@@ -501,7 +702,14 @@ def main():
     if total == 0:
         print("WARNING: no items fetched at all (network blocked?)", file=sys.stderr)
 
-    html_out = render(data, built_at)
+    print("[worldcup]", file=sys.stderr)
+    try:
+        wc = fetch_worldcup(built_at)
+    except Exception as ex:
+        print(f"  ! worldcup add-on failed: {ex}", file=sys.stderr)
+        wc = None
+
+    html_out = render(data, built_at, wc)
     import os
     os.makedirs("docs", exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
